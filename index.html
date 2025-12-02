@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Photo Studio</title>
+    
+    <!-- 1. Styles -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet" />
+    <style>
+      body {
+        background-color: #0f172a; /* Slate 900 */
+        color: #f8fafc; /* Slate 50 */
+        font-family: 'Inter', sans-serif;
+      }
+      .glass-panel {
+        background: rgba(30, 41, 59, 0.7);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      @keyframes scan {
+        0% { top: 0%; }
+        50% { top: 100%; }
+        100% { top: 0%; }
+      }
+      .scanner-line {
+        position: absolute;
+        width: 100%;
+        height: 2px;
+        background: #818cf8;
+        box-shadow: 0 0 10px #818cf8;
+        animation: scan 3s infinite linear;
+      }
+      /* Custom scrollbar */
+      ::-webkit-scrollbar {
+        width: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #0f172a; 
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #334155; 
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #475569; 
+      }
+    </style>
+
+    <!-- 2. Compilers & Imports -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "@google/genai": "https://esm.sh/@google/genai"
+      }
+    }
+    </script>
+    
+    <!-- 3. Polyfills -->
+    <script>
+      // Polyfill process.env for static usage
+      window.process = { env: { API_KEY: '' } };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!-- 4. Application Logic -->
+    <script type="text/babel" data-presets="react,typescript" data-type="module">
+      import React, { useState, useRef, useEffect } from "react";
+      import { createRoot } from "react-dom/client";
+      import { GoogleGenAI } from "@google/genai";
+
+      const MODELS = [
+        { id: "gemini-2.5-flash-image", name: "Gemini 2.5 Flash (Nano)", desc: "Fast generation" },
+        { id: "gemini-3-pro-image-preview", name: "Gemini 3 Pro", desc: "High quality details" }
+      ];
+
+      const PHOTO_STYLES = [
+        {
+          id: "professional",
+          title: "职业肖像照",
+          subtitle: "Professional Portrait",
+          icon: "fa-user-tie",
+          prompt: "Generate a professional business headshot of this person. High quality studio lighting, formal suit or professional attire, neutral background, confident expression, suitable for LinkedIn profile. Photorealistic, 8k."
+        },
+        {
+          id: "fashion",
+          title: "时尚写真",
+          subtitle: "Fashion Photography",
+          icon: "fa-camera-retro",
+          prompt: "Generate a trendy fashion photography shot of this person. Stylish outfit, vibrant colors, street style or studio fashion pose, modern aesthetic, high fashion look."
+        },
+        {
+          id: "museum",
+          title: "美术馆迷失的她",
+          subtitle: "Lost in Art Museum",
+          icon: "fa-landmark",
+          prompt: "Generate an artistic photo of this person in a modern art museum. Candid style, looking at a painting, soft gallery lighting, emotional atmosphere, blurred background of artwork, aesthetic composition."
+        },
+        {
+          id: "bw_art",
+          title: "黑白艺术照",
+          subtitle: "B&W Artistic",
+          icon: "fa-adjust",
+          prompt: "Generate a black and white fine art portrait of this person. High contrast, dramatic lighting (chiaroscuro), artistic shadows, expressive and emotive, classic photography style."
+        },
+        {
+          id: "magazine",
+          title: "時尚雜誌封面",
+          subtitle: "Magazine Cover",
+          icon: "fa-newspaper",
+          prompt: "Generate a glamour shot of this person suitable for a high-end fashion magazine cover. Editorial lighting, bold makeup/styling, confident pose, luxury vibe, clean composition for text overlays."
+        },
+        {
+          id: "cinematic",
+          title: "电影肖像",
+          subtitle: "Cinematic Portrait",
+          icon: "fa-film",
+          prompt: "Generate a cinematic movie still of this person. Shallow depth of field (bokeh), dramatic color grading, anamorphic lens look, movie scene atmosphere, emotional close-up, 4k resolution."
+        }
+      ];
+
+      type GenerationStatus = "idle" | "loading" | "success" | "error" | "auth_error";
+
+      interface GeneratedImage {
+        styleId: string;
+        status: GenerationStatus;
+        imageUrl?: string;
+        errorMessage?: string;
+      }
+
+      const App = () => {
+        const [sourceImage, setSourceImage] = useState(null);
+        const [selectedModel, setSelectedModel] = useState(MODELS[0].id);
+        const [results, setResults] = useState(
+          PHOTO_STYLES.map((s) => ({ styleId: s.id, status: "idle" }))
+        );
+        const [isGlobalLoading, setIsGlobalLoading] = useState(false);
+        const [userApiKey, setUserApiKey] = useState("");
+        const fileInputRef = useRef(null);
+
+        useEffect(() => {
+            const storedKey = localStorage.getItem("GEMINI_API_KEY");
+            if (storedKey) setUserApiKey(storedKey);
+        }, []);
+
+        const saveApiKey = (key) => {
+            setUserApiKey(key);
+            localStorage.setItem("GEMINI_API_KEY", key);
+            // Clear auth errors on key update
+            setResults(prev => prev.map(r => r.status === 'auth_error' ? { ...r, status: 'idle' } : r));
+        };
+
+        const handleFileChange = (e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+              setSourceImage(event.target?.result);
+              setResults(PHOTO_STYLES.map((s) => ({ styleId: s.id, status: "idle" })));
+            };
+            reader.readAsDataURL(file);
+          }
+        };
+
+        const ensureApiKey = async (modelId) => {
+           // If we have a local key, we are good.
+           if (userApiKey || process.env.API_KEY) return;
+
+           // If using Pro model in AI Studio environment
+           if (modelId === "gemini-3-pro-image-preview") {
+             try {
+               const hasKey = await window.aistudio?.hasSelectedApiKey();
+               if (!hasKey) {
+                 await window.aistudio?.openSelectKey();
+               }
+             } catch (e) {
+               console.log("Key selection skipped or not available.");
+             }
+           }
+        };
+
+        const generateSingleImage = async (styleId, prompt, imageBase64, modelId) => {
+          const base64Data = imageBase64.split(",")[1];
+          const mimeType = imageBase64.split(";")[0].split(":")[1];
+
+          // Priority: User Input Key -> Process Env Key -> Empty (will fail)
+          const activeKey = "AIzaSyDUfXDnS08PdI5Tfpnfq7lFgcuba5XGpiU";
+
+          try {
+            const ai = new GoogleGenAI({ apiKey: activeKey });
+            
+            const response = await ai.models.generateContent({
+              model: modelId,
+              contents: {
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: mimeType,
+                      data: base64Data,
+                    },
+                  },
+                  {
+                    text: `${prompt} Keep facial features consistent with the source image.`,
+                  },
+                ],
+              },
+              config: {
+                imageConfig: {
+                  aspectRatio: "3:4",
+                  ...(modelId === "gemini-3-pro-image-preview" ? { imageSize: "1K" } : {})
+                }
+              }
+            });
+
+            let generatedUrl = "";
+            for (const part of response.candidates?.[0]?.content?.parts || []) {
+              if (part.inlineData) {
+                generatedUrl = `data:image/png;base64,${part.inlineData.data}`;
+                break;
+              }
+            }
+
+            if (generatedUrl) {
+              setResults((prev) =>
+                prev.map((item) =>
+                  item.styleId === styleId
+                    ? { ...item, status: "success", imageUrl: generatedUrl }
+                    : item
+                )
+              );
+            } else {
+              throw new Error("No image generated");
+            }
+          } catch (error) {
+            console.error(`Error generating ${styleId}:`, error);
+            
+            let newStatus = "error";
+            const errorMsg = error?.message || "";
+            
+            if (errorMsg.includes("403") || errorMsg.includes("API key") || errorMsg.includes("permission")) {
+              newStatus = "auth_error";
+            }
+
+            setResults((prev) =>
+              prev.map((item) =>
+                item.styleId === styleId ? { ...item, status: newStatus, errorMessage: errorMsg } : item
+              )
+            );
+          }
+        };
+
+        const handleGenerateAll = async () => {
+          if (!sourceImage) return;
+
+          try {
+            await ensureApiKey(selectedModel);
+          } catch (e) {
+            console.error("API Key check failed", e);
+          }
+
+          setIsGlobalLoading(true);
+          setResults(PHOTO_STYLES.map((s) => ({ styleId: s.id, status: "loading" })));
+
+          const promises = PHOTO_STYLES.map((style) =>
+            generateSingleImage(style.id, style.prompt, sourceImage, selectedModel)
+          );
+
+          await Promise.all(promises);
+          setIsGlobalLoading(false);
+        };
+
+        const handleRegenerate = async (styleId) => {
+          if (!sourceImage) return;
+          try { await ensureApiKey(selectedModel); } catch (e) {}
+
+          setResults((prev) =>
+            prev.map((item) =>
+              item.styleId === styleId ? { ...item, status: "loading" } : item
+            )
+          );
+
+          const style = PHOTO_STYLES.find((s) => s.id === styleId);
+          if (style) {
+            await generateSingleImage(style.id, style.prompt, sourceImage, selectedModel);
+          }
+        };
+
+        return (
+          <div className="min-h-screen p-6 md:p-12 max-w-7xl mx-auto">
+            <header className="text-center mb-12">
+              <h1 className="text-4xl md:text-5xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400 mb-4">
+                <i className="fas fa-magic mr-3"></i>AI Photo Studio
+              </h1>
+              <p className="text-slate-400 text-lg">
+                Upload one photo, get 6 professional styles instantly.
+              </p>
+            </header>
+
+            <div className="grid md:grid-cols-3 gap-8 mb-16">
+              <div className="md:col-span-1 space-y-6">
+                <div 
+                  className="glass-panel rounded-2xl p-6 border-dashed border-2 border-slate-600 hover:border-indigo-500 transition-colors cursor-pointer flex flex-col items-center justify-center aspect-[3/4] relative overflow-hidden group"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  {sourceImage ? (
+                    <>
+                      <img 
+                        src={sourceImage} 
+                        alt="Source" 
+                        className="absolute inset-0 w-full h-full object-cover opacity-80 group-hover:opacity-60 transition-opacity" 
+                      />
+                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40">
+                        <span className="text-white font-medium"><i className="fas fa-sync mr-2"></i>Change Photo</span>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-center p-6">
+                      <div className="w-16 h-16 rounded-full bg-slate-700 mx-auto flex items-center justify-center mb-4 text-indigo-400">
+                        <i className="fas fa-cloud-upload-alt text-2xl"></i>
+                      </div>
+                      <p className="text-lg font-medium text-slate-200">Upload Portrait</p>
+                      <p className="text-sm text-slate-500 mt-2">Click to browse</p>
+                    </div>
+                  )}
+                  <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    className="hidden" 
+                    accept="image/*" 
+                    onChange={handleFileChange} 
+                  />
+                </div>
+
+                <div className="glass-panel rounded-xl p-4">
+                   <label className="text-xs uppercase text-slate-500 font-bold mb-2 block tracking-wider">Select AI Model</label>
+                   <div className="space-y-2">
+                      {MODELS.map(model => (
+                        <div 
+                          key={model.id}
+                          onClick={() => setSelectedModel(model.id)}
+                          className={`p-3 rounded-lg cursor-pointer flex items-center justify-between border transition-all ${
+                             selectedModel === model.id 
+                             ? "bg-indigo-900/40 border-indigo-500" 
+                             : "bg-slate-800/50 border-transparent hover:bg-slate-800"
+                          }`}
+                        >
+                           <div>
+                             <div className={`font-medium ${selectedModel === model.id ? "text-indigo-300" : "text-slate-300"}`}>{model.name}</div>
+                             <div className="text-xs text-slate-500">{model.desc}</div>
+                           </div>
+                           {selectedModel === model.id && <i className="fas fa-check-circle text-indigo-400"></i>}
+                        </div>
+                      ))}
+                   </div>
+                </div>
+
+                <button
+                  onClick={handleGenerateAll}
+                  disabled={!sourceImage || isGlobalLoading}
+                  className={`w-full py-4 rounded-xl font-bold text-lg shadow-lg transition-all transform hover:scale-[1.02] ${
+                    !sourceImage 
+                      ? "bg-slate-700 text-slate-500 cursor-not-allowed" 
+                      : isGlobalLoading 
+                        ? "bg-indigo-900 text-indigo-300 cursor-wait" 
+                        : "bg-gradient-to-r from-indigo-600 to-purple-600 text-white hover:from-indigo-500 hover:to-purple-500 shadow-indigo-500/25"
+                  }`}
+                >
+                  {isGlobalLoading ? (
+                    <span><i className="fas fa-spinner fa-spin mr-2"></i>Processing...</span>
+                  ) : (
+                    <span><i className="fas fa-wand-magic-sparkles mr-2"></i>Generate 6 Photos</span>
+                  )}
+                </button>
+              </div>
+
+              <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                {PHOTO_STYLES.map((style) => {
+                  const result = results.find((r) => r.styleId === style.id);
+                  const isLoading = result?.status === "loading";
+                  const isSuccess = result?.status === "success";
+                  const isError = result?.status === "error";
+                  const isAuthError = result?.status === "auth_error";
+
+                  return (
+                    <div key={style.id} className="glass-panel rounded-2xl overflow-hidden flex flex-col h-full group relative">
+                      <div className="relative aspect-[3/4] bg-slate-800">
+                        {isLoading && (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center z-10">
+                            <div className="scanner-line"></div>
+                            <div className="text-indigo-400 font-mono text-xs mt-32 animate-pulse">
+                              DEVELOPING...
+                            </div>
+                          </div>
+                        )}
+                        
+                        {isSuccess && result?.imageUrl ? (
+                          <img 
+                            src={result.imageUrl} 
+                            alt={style.title} 
+                            className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
+                          />
+                        ) : (
+                          <div className="w-full h-full flex flex-col items-center justify-center text-slate-600">
+                            {!isLoading && !isError && !isAuthError && (
+                              <>
+                                <i className={`fas ${style.icon} text-4xl mb-3 opacity-30`}></i>
+                                <span className="text-xs uppercase tracking-widest opacity-50">Waiting</span>
+                              </>
+                            )}
+                          </div>
+                        )}
+
+                        {(isError || isAuthError) && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-slate-900/90 text-red-400 flex-col p-4 text-center z-20">
+                             {isAuthError ? (
+                               <div className="w-full">
+                                  <i className="fas fa-key mb-2 text-2xl text-amber-500"></i>
+                                  <p className="text-xs font-bold text-slate-300 mb-2">API Key Required</p>
+                                  <input 
+                                    type="password" 
+                                    placeholder="Paste Gemini API Key"
+                                    className="w-full bg-slate-800 border border-slate-600 rounded p-2 text-xs text-white mb-2"
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            saveApiKey(e.target.value);
+                                        }
+                                    }}
+                                  />
+                                  <button 
+                                    onClick={(e) => saveApiKey(e.target.previousSibling.value)}
+                                    className="bg-indigo-600 text-white text-xs px-3 py-1 rounded w-full hover:bg-indigo-500"
+                                  >
+                                    Save & Retry
+                                  </button>
+                               </div>
+                             ) : (
+                               <>
+                                <i className="fas fa-exclamation-triangle mb-2 text-2xl"></i>
+                                <span className="text-sm font-bold">Failed</span>
+                               </>
+                             )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="p-4 bg-slate-900/50 border-t border-white/5 flex-grow flex flex-col justify-between">
+                        <div>
+                          <h3 className="font-bold text-slate-100">{style.title}</h3>
+                          <p className="text-xs text-slate-400">{style.subtitle}</p>
+                        </div>
+                        
+                        <div className="flex gap-2 mt-3">
+                          {isSuccess && (
+                            <a
+                              href={result?.imageUrl}
+                              download={`photo-studio-${style.id}.png`}
+                              className="flex-1 py-2 text-xs font-bold text-center rounded bg-slate-800 hover:bg-slate-700 text-indigo-400 transition-colors"
+                            >
+                              <i className="fas fa-download mr-1"></i> SAVE
+                            </a>
+                          )}
+                          
+                          {(isSuccess || isError) && (
+                               <button
+                               onClick={() => handleRegenerate(style.id)}
+                               className={`py-2 px-3 text-xs font-bold rounded transition-colors ${
+                                   (isError)
+                                   ? "w-full bg-red-900/30 text-red-400 hover:bg-red-900/50" 
+                                   : "bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                               }`}
+                               title="Regenerate this image"
+                             >
+                               <i className={`fas fa-sync-alt ${isLoading ? 'fa-spin' : ''}`}></i>
+                             </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <footer className="text-center text-slate-600 text-sm py-8 border-t border-slate-800">
+              <p>© 2025 AI Photo Studio • Powered by Gemini</p>
+            </footer>
+          </div>
+        );
+      };
+
+      const root = createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
