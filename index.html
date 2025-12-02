@@ -75,10 +75,7 @@
       import { createRoot } from "react-dom/client";
       import { GoogleGenAI } from "@google/genai";
 
-      const MODELS = [
-        { id: "gemini-2.5-flash-image", name: "Gemini 2.5 Flash (Nano)", desc: "Fast generation" },
-        { id: "gemini-3-pro-image-preview", name: "Gemini 3 Pro", desc: "High quality details" }
-      ];
+      const ACTIVE_MODEL = "gemini-2.5-flash-image";
 
       const PHOTO_STYLES = [
         {
@@ -136,7 +133,6 @@
 
       const App = () => {
         const [sourceImage, setSourceImage] = useState(null);
-        const [selectedModel, setSelectedModel] = useState(MODELS[0].id);
         const [results, setResults] = useState(
           PHOTO_STYLES.map((s) => ({ styleId: s.id, status: "idle" }))
         );
@@ -168,35 +164,23 @@
           }
         };
 
-        const ensureApiKey = async (modelId) => {
+        const ensureApiKey = async () => {
            // If we have a local key, we are good.
            if (userApiKey || process.env.API_KEY) return;
-
-           // If using Pro model in AI Studio environment
-           if (modelId === "gemini-3-pro-image-preview") {
-             try {
-               const hasKey = await window.aistudio?.hasSelectedApiKey();
-               if (!hasKey) {
-                 await window.aistudio?.openSelectKey();
-               }
-             } catch (e) {
-               console.log("Key selection skipped or not available.");
-             }
-           }
         };
 
-        const generateSingleImage = async (styleId, prompt, imageBase64, modelId) => {
+        const generateSingleImage = async (styleId, prompt, imageBase64) => {
           const base64Data = imageBase64.split(",")[1];
           const mimeType = imageBase64.split(";")[0].split(":")[1];
 
           // Priority: User Input Key -> Process Env Key -> Empty (will fail)
-          const activeKey = "AIzaSyDUfXDnS08PdI5Tfpnfq7lFgcuba5XGpiU";
+          const activeKey = userApiKey || "AIzaSyDUfXDnS08PdI5Tfpnfq7lFgcuba5XGpiU";
 
           try {
             const ai = new GoogleGenAI({ apiKey: activeKey });
             
             const response = await ai.models.generateContent({
-              model: modelId,
+              model: ACTIVE_MODEL,
               contents: {
                 parts: [
                   {
@@ -212,8 +196,7 @@
               },
               config: {
                 imageConfig: {
-                  aspectRatio: "3:4",
-                  ...(modelId === "gemini-3-pro-image-preview" ? { imageSize: "1K" } : {})
+                  aspectRatio: "3:4"
                 }
               }
             });
@@ -259,7 +242,7 @@
           if (!sourceImage) return;
 
           try {
-            await ensureApiKey(selectedModel);
+            await ensureApiKey();
           } catch (e) {
             console.error("API Key check failed", e);
           }
@@ -268,7 +251,7 @@
           setResults(PHOTO_STYLES.map((s) => ({ styleId: s.id, status: "loading" })));
 
           const promises = PHOTO_STYLES.map((style) =>
-            generateSingleImage(style.id, style.prompt, sourceImage, selectedModel)
+            generateSingleImage(style.id, style.prompt, sourceImage)
           );
 
           await Promise.all(promises);
@@ -277,7 +260,7 @@
 
         const handleRegenerate = async (styleId) => {
           if (!sourceImage) return;
-          try { await ensureApiKey(selectedModel); } catch (e) {}
+          try { await ensureApiKey(); } catch (e) {}
 
           setResults((prev) =>
             prev.map((item) =>
@@ -287,7 +270,7 @@
 
           const style = PHOTO_STYLES.find((s) => s.id === styleId);
           if (style) {
-            await generateSingleImage(style.id, style.prompt, sourceImage, selectedModel);
+            await generateSingleImage(style.id, style.prompt, sourceImage);
           }
         };
 
@@ -337,27 +320,9 @@
                   />
                 </div>
 
-                <div className="glass-panel rounded-xl p-4">
-                   <label className="text-xs uppercase text-slate-500 font-bold mb-2 block tracking-wider">Select AI Model</label>
-                   <div className="space-y-2">
-                      {MODELS.map(model => (
-                        <div 
-                          key={model.id}
-                          onClick={() => setSelectedModel(model.id)}
-                          className={`p-3 rounded-lg cursor-pointer flex items-center justify-between border transition-all ${
-                             selectedModel === model.id 
-                             ? "bg-indigo-900/40 border-indigo-500" 
-                             : "bg-slate-800/50 border-transparent hover:bg-slate-800"
-                          }`}
-                        >
-                           <div>
-                             <div className={`font-medium ${selectedModel === model.id ? "text-indigo-300" : "text-slate-300"}`}>{model.name}</div>
-                             <div className="text-xs text-slate-500">{model.desc}</div>
-                           </div>
-                           {selectedModel === model.id && <i className="fas fa-check-circle text-indigo-400"></i>}
-                        </div>
-                      ))}
-                   </div>
+                <div className="glass-panel rounded-xl p-4 flex items-center justify-between">
+                   <span className="text-sm font-bold text-slate-400 uppercase tracking-wider">Model</span>
+                   <span className="text-xs bg-indigo-900/50 text-indigo-300 px-2 py-1 rounded border border-indigo-500/30">Nano Banana (Flash 2.5)</span>
                 </div>
 
                 <button
